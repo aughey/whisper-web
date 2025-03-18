@@ -2,6 +2,25 @@
 
 A modified version of the original Whisper Web project, enhanced to provide system-wide voice-to-text capabilities. This project leverages browser-based ML-powered speech recognition using [🤗 Transformers.js](https://github.com/xenova/transformers.js) and extends it with remote control capabilities and system integration. Designed specifically to work with Stream Deck for seamless AI coding assistant integration.
 
+## Motivation
+
+This project emerged from frustration with existing voice integration solutions for AI coding assistants like Cursor. While built-in operating system solutions (like Windows Key + H on Windows or macOS's transcription system) and various plugin implementations exist, they often fall short in transcription quality and reliability.
+
+Key motivating factors:
+- Existing Cursor extensions with voice integration were underwhelming
+- Built-in OS transcription services provided subpar accuracy
+- Whisper consistently delivers superior transcription quality
+- Existing Whisper integrations in plugins were limited or used alternative mechanisms
+
+The current implementation provides significantly better transcription quality through Whisper, though there are some trade-offs:
+
+**Current Limitations:**
+- There is a noticeable delay between speech submission and transcription completion
+- Real-time/on-the-fly transcription is not yet implemented
+- Processing longer voice communications can result in longer delays
+
+Despite these limitations, the solution provides a more accurate and reliable transcription system compared to built-in alternatives, making it particularly valuable for AI coding assistant interactions.
+
 ## Features
 
 - Browser-based speech recognition using Whisper ML model
