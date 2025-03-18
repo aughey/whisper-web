@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import axios from "axios";
 import Modal from "./modal/Modal";
 import { UrlInput } from "./modal/UrlInput";
@@ -8,6 +8,7 @@ import Constants from "../utils/Constants";
 import { Transcriber } from "../hooks/useTranscriber";
 import Progress from "./Progress";
 import AudioRecorder from "./AudioRecorder";
+import { useWebSocketControl } from "../hooks/useWebSocketControl";
 
 function titleCase(str: string) {
     str = str.toLowerCase();
@@ -133,16 +134,17 @@ export function AudioManager(props: { transcriber: Transcriber }) {
     const [progress, setProgress] = useState<number | undefined>(undefined);
     const [audioData, setAudioData] = useState<
         | {
-              buffer: AudioBuffer;
-              url: string;
-              source: AudioSource;
-              mimeType: string;
-          }
+            buffer: AudioBuffer;
+            url: string;
+            source: AudioSource;
+            mimeType: string;
+        }
         | undefined
     >(undefined);
     const [audioDownloadUrl, setAudioDownloadUrl] = useState<
         string | undefined
     >(undefined);
+    const [shouldAutoTranscribe, setShouldAutoTranscribe] = useState(false);
 
     const isAudioLoading = progress !== undefined;
 
@@ -237,6 +239,35 @@ export function AudioManager(props: { transcriber: Transcriber }) {
         }
     }, [audioDownloadUrl]);
 
+    // Effect to handle auto-transcription when audio is loaded
+    useEffect(() => {
+        if (shouldAutoTranscribe && audioData && !isAudioLoading) {
+            props.transcriber.start(audioData.buffer);
+            setShouldAutoTranscribe(false);
+        }
+    }, [audioData, isAudioLoading, shouldAutoTranscribe]);
+
+    // Effect to watch for transcription results
+    useEffect(() => {
+        const sendTranscriptionToServer = async (text: string) => {
+            try {
+                // Send to both endpoints in parallel
+                await Promise.all([
+                    axios.post('/api/transcription', { text }),
+                    axios.post('/api2/transcription', { text })
+                ]);
+                console.log('Transcription saved successfully to both endpoints');
+            } catch (error) {
+                console.error('Error saving transcription:', error);
+            }
+        };
+
+        // When transcription is complete and not busy
+        if (props.transcriber.output && !props.transcriber.isBusy) {
+            sendTranscriptionToServer(props.transcriber.output.text);
+        }
+    }, [props.transcriber.output, props.transcriber.isBusy]);
+
     return (
         <>
             <div className='flex flex-col justify-center items-center rounded-lg bg-white shadow-xl shadow-black/5 ring-1 ring-slate-700/10'>
@@ -272,6 +303,17 @@ export function AudioManager(props: { transcriber: Transcriber }) {
                                 setAudioData={(e) => {
                                     props.transcriber.onInputChange();
                                     setAudioFromRecording(e);
+                                }}
+                            />
+                            <VerticalBar />
+                            <TranscribeTile
+                                icon={<TranscribeIcon />}
+                                text={"Transcribe"}
+                                transcriber={props.transcriber}
+                                setAudioData={(blob) => {
+                                    props.transcriber.onInputChange();
+                                    setShouldAutoTranscribe(true);
+                                    setAudioFromRecording(blob);
                                 }}
                             />
                         </>
@@ -405,14 +447,13 @@ function SettingsModal(props: {
                                 )
                             )
                             .map((key) => (
-                                <option key={key} value={key}>{`${key}${
-                                    (props.transcriber.multilingual || key.startsWith('distil-whisper/')) ? "" : ".en"
-                                } (${
+                                <option key={key} value={key}>{`${key}${(props.transcriber.multilingual || key.startsWith('distil-whisper/')) ? "" : ".en"
+                                    } (${
                                     // @ts-ignore
                                     models[key][
-                                        props.transcriber.quantized ? 0 : 1
+                                    props.transcriber.quantized ? 0 : 1
                                     ]
-                                }MB)`}</option>
+                                    }MB)`}</option>
                             ))}
                     </select>
                     <div className='flex justify-between items-center mb-3 px-1'>
@@ -485,7 +526,7 @@ function SettingsModal(props: {
                 </>
             }
             onClose={props.onClose}
-            onSubmit={() => {}}
+            onSubmit={() => { }}
         />
     );
 }
@@ -695,15 +736,114 @@ function RecordModal(props: {
     );
 }
 
+function TranscribeTile(props: {
+    icon: JSX.Element;
+    text: string;
+    transcriber: Transcriber;
+    setAudioData: (data: Blob) => void;
+}) {
+    const [isRecording, setIsRecording] = useState(false);
+    const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+    const [shouldTranscribe, setShouldTranscribe] = useState(false);
+    const chunks = useRef<Blob[]>([]);
+
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream);
+
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    chunks.current.push(e.data);
+                }
+            };
+
+            recorder.onstop = () => {
+                const blob = new Blob(chunks.current, { type: 'audio/wav' });
+                chunks.current = [];
+                setShouldTranscribe(true);  // Set flag to transcribe after audio is loaded
+                props.setAudioData(blob);
+                // Stop all tracks
+                stream.getTracks().forEach(track => track.stop());
+                // Clear recorder
+                setMediaRecorder(null);
+            };
+
+            setMediaRecorder(recorder);
+            recorder.start();
+            setIsRecording(true);
+        } catch (err) {
+            console.error("Error accessing microphone:", err);
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            setIsRecording(false);
+        }
+    };
+
+    // Handle WebSocket control
+    useWebSocketControl({
+        onStart: () => {
+            if (!isRecording) {
+                startRecording();
+            }
+        },
+        onStop: () => {
+            if (isRecording) {
+                stopRecording();
+            }
+        },
+    });
+
+    const onClick = () => {
+        if (isRecording) {
+            stopRecording();
+        } else {
+            startRecording();
+        }
+    };
+
+    return (
+        <Tile
+            icon={isRecording ? <StopIcon /> : props.icon}
+            text={isRecording ? "Stop" : props.text}
+            onClick={onClick}
+            className={isRecording ? 'text-red-500 hover:text-red-600 hover:bg-red-50' : undefined}
+        />
+    );
+}
+
+function StopIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+        >
+            <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z"
+            />
+        </svg>
+    );
+}
+
 function Tile(props: {
     icon: JSX.Element;
     text?: string;
     onClick?: () => void;
+    className?: string;
 }) {
     return (
         <button
             onClick={props.onClick}
-            className='flex items-center justify-center rounded-lg p-2 bg-blue text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-all duration-200'
+            className={'flex items-center justify-center rounded-lg p-2 bg-blue text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-all duration-200 ' + (props.className || '')}
         >
             <div className='w-7 h-7'>{props.icon}</div>
             {props.text && (
@@ -787,6 +927,24 @@ function MicrophoneIcon() {
                 strokeLinecap='round'
                 strokeLinejoin='round'
                 d='M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z'
+            />
+        </svg>
+    );
+}
+
+function TranscribeIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+        >
+            <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
             />
         </svg>
     );
